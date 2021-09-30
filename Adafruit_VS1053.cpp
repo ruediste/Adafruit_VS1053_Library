@@ -224,7 +224,18 @@ unsigned long Adafruit_VS1053_FilePlayer::mp3_ID3Jumper(File mp3) {
   return start;
 }
 
-boolean Adafruit_VS1053_FilePlayer::startPlayingFile(const char *trackname) {
+
+boolean Adafruit_VS1053_FilePlayer::startPlayingFile(const char *trackname, uint32_t startPosition)
+{
+  return startPlayingFile(SD.open(trackname),startPosition);
+}
+
+boolean Adafruit_VS1053_FilePlayer::startPlayingFile(File track, uint32_t startPosition){
+  currentTrack=track;
+  if (!currentTrack)
+  {
+    return false;
+  }
   // reset playback
   sciWrite(VS1053_REG_MODE, VS1053_MODE_SM_LINE1 | VS1053_MODE_SM_SDINEW |
                                 VS1053_MODE_SM_LAYER12);
@@ -232,14 +243,18 @@ boolean Adafruit_VS1053_FilePlayer::startPlayingFile(const char *trackname) {
   sciWrite(VS1053_REG_WRAMADDR, 0x1e29);
   sciWrite(VS1053_REG_WRAM, 0);
 
-  currentTrack = SD.open(trackname);
-  if (!currentTrack) {
+  if (currentTrack.size() <= startPosition)
+  {
+    // we would seek past the end of the file, cancel
+    playingMusic = false;
+    currentTrack.close();
     return false;
   }
 
   // We know we have a valid file. Check if .mp3
   // If so, check for ID3 tag and jump it if present.
-  if (isMP3File(trackname)) {
+  if (isMP3File(currentTrack.name()))
+  {
     currentTrack.seek(mp3_ID3Jumper(currentTrack));
   }
 
@@ -254,15 +269,54 @@ boolean Adafruit_VS1053_FilePlayer::startPlayingFile(const char *trackname) {
   playingMusic = true;
 
   // wait till its ready for data
-  while (!readyForData()) {
+  while (!readyForData())
+  {
 #if defined(ESP8266)
     ESP.wdtFeed();
 #endif
   }
 
-  // fill it up!
-  while (playingMusic && readyForData()) {
-    feedBuffer();
+  // fill the buffer up
+  feedBuffer_noLock();
+
+  if (playingMusic && startPosition > 0)
+  {
+    // wait for jumps to be allowed
+    while (playingMusic && (sciRead(VS1053_REG_STATUS) & VS1053_SS_DO_NOT_JUMP) != 0)
+    {
+      // keep the buffer filled
+      feedBuffer_noLock();
+
+      // don't flood the chip with SCI commands
+      delay(10);
+    }
+
+    // read endFillByte
+    delay(10);
+    sciWrite(VS1053_REG_WRAMADDR, VS1053_END_FILL_BYTE_ADDR);
+    delay(10);
+    uint16_t endFillByte = sciRead(VS1053_REG_WRAM);
+
+    // send endFillByte
+    for (int i = 0; i < VS1053_DATABUFFERLEN; i++)
+      mp3buffer[i] = endFillByte;
+    for (int i = 0; i < 2048;)
+    {
+      while (!readyForData())
+      {
+#if defined(ESP8266)
+        ESP.wdtFeed();
+#endif
+      }
+      playData(mp3buffer, VS1053_DATABUFFERLEN);
+      i += VS1053_DATABUFFERLEN;
+    }
+
+    // now we can seek
+    currentTrack.seek(startPosition);
+
+    // fill the buffer up
+    feedBuffer_noLock();
   }
 
   // ok going forward, we can use the IRQ
@@ -305,6 +359,8 @@ void Adafruit_VS1053_FilePlayer::feedBuffer_noLock(void) {
       // must be at the end of the file, wrap it up!
       playingMusic = false;
       currentTrack.close();
+      if (songCompleted!=NULL)
+        (*songCompleted)();
       break;
     }
 
@@ -478,6 +534,13 @@ uint16_t Adafruit_VS1053::decodeTime() {
 void Adafruit_VS1053::softReset(void) {
   sciWrite(VS1053_REG_MODE, VS1053_MODE_SM_SDINEW | VS1053_MODE_SM_RESET);
   delay(100);
+
+  // reset the SS_DO_NOT_JUMP flag
+  uint16_t status = sciRead(VS1053_REG_STATUS);
+  delay(10);
+  status &= ~VS1053_SS_DO_NOT_JUMP;
+  sciWrite(VS1053_REG_STATUS, status);
+  delay(10);
 }
 
 void Adafruit_VS1053::reset() {
@@ -567,7 +630,7 @@ boolean Adafruit_VS1053::prepareRecordOgg(char *plugname) {
   sciWrite(VS1053_REG_WRAMADDR, VS1053_INT_ENABLE);
   sciWrite(VS1053_REG_WRAM, 0x02);
 
-  int pluginStartAddr = loadPlugin(plugname);
+  uint16_t pluginStartAddr = loadPlugin(plugname);
   if (pluginStartAddr == 0xFFFF)
     return false;
   Serial.print("Plugin at $");

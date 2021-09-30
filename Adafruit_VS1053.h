@@ -107,6 +107,8 @@ typedef volatile RwReg PortReg; //!< Type definition/alias used to specify the
 #define VS1053_SCI_AICTRL3                                                     \
   0x0F //!< SCI_AICTRL register 3. Used to access the user's application program
 
+#define VS1053_SS_DO_NOT_JUMP 0x8000 // bit set in VS1053_REG_STATUS while header is being decoded and no jumps are allowed
+#define VS1053_END_FILL_BYTE_ADDR 0x1e06 // address of endFillByte in X memory
 #define VS1053_DATABUFFERLEN 32 //!< Length of the data buffer
 
 /*!
@@ -375,7 +377,27 @@ public:
    * @param *trackname File to play
    * @return Returns true when file starts playing
    */
-  boolean startPlayingFile(const char *trackname);
+  boolean startPlayingFile(const char *trackname)
+  {
+    return startPlayingFile(trackname, 0);
+  }
+  /*!
+   * @brief Begin playing the specified file from the SD card using
+   * interrupt-drive playback.
+   * @param *trackname File to play
+   * @return Returns true when file starts playing
+   */
+  boolean startPlayingFile(const char *trackname, uint32_t startPosition);
+
+
+  /*!
+   * @brief Begin playing the specified file from the SD card using
+   * interrupt-drive playback.
+   * @param *track File to play
+   * @return Returns true when file starts playing
+   */
+  boolean startPlayingFile(File track, uint32_t startPosition);
+  
   /*!
    * @brief Play the complete file. This function will not return until the
    * playback is complete
@@ -399,6 +421,8 @@ public:
    * @param pause whether or not to pause playback
    */
   void pausePlaying(boolean pause);
+
+  void (*songCompleted)()=NULL;
 
 private:
   void feedBuffer_noLock(void);
